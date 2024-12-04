@@ -25,14 +25,14 @@
 //
 // ================================================================================================
 
-use nix::mount::{mount, umount2, MntFlags, MsFlags};
-use nix::sched::{unshare, CloneFlags};
+use nix::mount as nix_mount;
+use nix::sched as nix_sched;
 use nix::sys::wait::waitpid;
 use nix::unistd::{chdir, execvp, fork, mkdir, pivot_root, sethostname, ForkResult};
 use reqwest::blocking::Client;
 use serde::Deserialize;
-use serde_yaml;
 use serde_json::Value;
+use serde_yaml;
 use std::ffi::CString;
 use std::fs::{create_dir_all, File};
 use std::io::{self, BufReader};
@@ -43,8 +43,8 @@ use tar::Archive;
 // Statefile structure
 #[derive(Deserialize)]
 struct StateFile {
-    container: String,         // Full DockerHub image name with optional tag
-    port: u16,                 // Port for localhost binding
+    container: String,          // Full DockerHub image name with optional tag
+    port: u16,                  // Port for localhost binding
     mounts: Option<Vec<Mount>>, // Optional list of mounts
 }
 
@@ -221,21 +221,22 @@ fn start_container(
     root_fs: &str,
     mounts: Option<Vec<Mount>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use nix::unistd::Uid;
+    use nix::unistd::{setgid, setuid, Gid, Uid};
+    use nix_mount::{MntFlags, MsFlags, UmountFlags};
 
     // Unshare process namespaces for isolation
-    unshare(
-        CloneFlags::CLONE_NEWNS
-            | CloneFlags::CLONE_NEWPID
-            | CloneFlags::CLONE_NEWNET
-            | CloneFlags::CLONE_NEWUTS,
+    nix_sched::unshare(
+        nix_sched::CloneFlags::CLONE_NEWNS
+            | nix_sched::CloneFlags::CLONE_NEWPID
+            | nix_sched::CloneFlags::CLONE_NEWNET
+            | nix_sched::CloneFlags::CLONE_NEWUTS,
     )?;
 
     // Set hostname to something else
     sethostname("container")?;
 
     // Make the mount namespace private to prevent mount propagation
-    mount(
+    nix_mount::mount(
         None::<&str>,
         "/",
         None::<&str>,
@@ -244,7 +245,7 @@ fn start_container(
     )?;
 
     // Bind mount the container's root filesystem onto itself to make it a mount point
-    mount(
+    nix_mount::mount(
         Some(root_fs),                      // Source
         root_fs,                            // Target
         None::<&str>,                       // Filesystem type
@@ -256,7 +257,7 @@ fn start_container(
     if let Some(mounts) = mounts {
         for mount_entry in mounts {
             let source_path = Path::new(&mount_entry.source);
-            let target_path = Path::new(root_fs).join(&mount_entry.target);
+            let target_path = Path::new(&mount_entry.target);
 
             // Ensure the target path exists
             create_dir_all(&target_path)?;
@@ -267,7 +268,7 @@ fn start_container(
                 source_path.display(),
                 target_path.display()
             );
-            mount(
+            nix_mount::mount(
                 Some(source_path),
                 &target_path,
                 None::<&str>,
@@ -278,7 +279,7 @@ fn start_container(
     }
 
     // Create a directory for old root
-    let old_root = Path::new(root_fs).join("old_root");
+    let old_root = Path::new("old_root");
     if !old_root.exists() {
         mkdir(&old_root, nix::sys::stat::Mode::from_bits(0o755).unwrap())?;
     }
@@ -293,8 +294,8 @@ fn start_container(
     chdir("/")?;
 
     // Unmount the old root to free up space
-    umount2("/old_root", MntFlags::MNT_DETACH)?;
-    std::fs::remove_dir_all("/old_root")?;
+    nix_mount::umount2("old_root", UmountFlags::MNT_DETACH)?;
+    std::fs::remove_dir_all("old_root")?;
 
     // Set up the filesystem hierarchy
     create_dir_all("/proc")?;
@@ -302,7 +303,7 @@ fn start_container(
     create_dir_all("/dev")?;
 
     // Mount /proc
-    mount(
+    nix_mount::mount(
         Some("proc"),
         "/proc",
         Some("proc"),
@@ -311,7 +312,7 @@ fn start_container(
     )?;
 
     // Mount /sys
-    mount(
+    nix_mount::mount(
         Some("sysfs"),
         "/sys",
         Some("sysfs"),
@@ -320,7 +321,7 @@ fn start_container(
     )?;
 
     // Mount /dev
-    mount(
+    nix_mount::mount(
         Some("tmpfs"),
         "/dev",
         Some("tmpfs"),
@@ -336,9 +337,9 @@ fn start_container(
         }
         ForkResult::Child => {
             // Drop privileges (optional but recommended)
-            if Uid::effective() == Uid::root() {
-                nix::unistd::setgid(nix::unistd::Gid::from_raw(65534))?; // nobody
-                nix::unistd::setuid(nix::unistd::Uid::from_raw(65534))?;
+            if Uid::effective().is_root() {
+                setgid(Gid::from_raw(65534))?; // nobody
+                setuid(Uid::from_raw(65534))?;
             }
 
             // Execute the container's entrypoint command
@@ -346,10 +347,8 @@ fn start_container(
             let args = [
                 CString::new("sh").unwrap(), // argv[0], the program name
                 CString::new("-c").unwrap(),
-                CString::new(
-                    "ip link set lo up && echo Hello from container! && sleep 10",
-                )
-                .unwrap(),
+                CString::new("ip link set lo up && echo Hello World from tinyort! && sleep 10")
+                    .unwrap(),
             ];
             execvp(&cmd, &args)?;
         }

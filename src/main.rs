@@ -1,5 +1,7 @@
 mod utils;
 
 fn main() {
-    features::runtime::core::run();
+    if let Err(e) = utils::core::run() {
+        eprintln!("Error: {}", e);
+    }
 }
