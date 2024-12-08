@@ -10,11 +10,11 @@
   </p>
 </div>
 
-## Architecture
+### Architecture
 
-### Core
+#### Core
 
-#### Linux Libraries
+##### Libs
 
 The Tinyo runtime leverages several Linux libraries and features to implement containerization at a low level. Below is a list of the core components and their purposes:
 
